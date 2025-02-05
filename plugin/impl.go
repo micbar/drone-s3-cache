@@ -6,46 +6,19 @@
 package plugin
 
 import (
+	"context"
 	"fmt"
+	"github.com/sirupsen/logrus"
 	"net/url"
 	"os"
 	pathutil "path"
 	"strings"
 	"time"
 
-	"github.com/drone-plugins/drone-s3-cache/storage/s3"
 	"github.com/drone/drone-cache-lib/archive/util"
 	"github.com/drone/drone-cache-lib/cache"
 	"github.com/drone/drone-cache-lib/storage"
-	"github.com/sirupsen/logrus"
-	"github.com/urfave/cli/v2"
-)
-
-// Settings for the plugin.
-type Settings struct {
-	Mode         string
-	Root         string
-	Filename     string
-	Path         string
-	FallbackPath string
-	FlushPath    string
-	FlushAge     int
-	Mount        cli.StringSlice
-	Restore      bool // DEPRECATED
-	Rebuild      bool // DEPRECATED
-	Flush        bool // DEPRECATED
-
-	S3Options s3.Options
-	mount     []string
-}
-
-const (
-	restoreMode = "restore"
-	rebuildMode = "rebuild"
-	flushMode   = "flush"
-
-	awsDomain   = "amazonaws.com"
-	awsEndpoint = "https://s3." + awsDomain
+	"github.com/micbar/drone-s3-cache/storage/s3"
 )
 
 // Validate handles the settings validation of the plugin.
@@ -58,25 +31,25 @@ func (p *Plugin) Validate() error {
 
 func (p *Plugin) validateMode() error {
 	// Validate the mode
-	mode := p.settings.Mode
-	hasMode := p.settings.Rebuild || p.settings.Restore || p.settings.Flush
+	mode := p.Settings.Mode
+	hasMode := p.Settings.Rebuild || p.Settings.Restore || p.Settings.Flush
 	if mode == "" {
 		logrus.WithFields(logrus.Fields{
-			"rebuild": p.settings.Rebuild,
-			"restore": p.settings.Restore,
-			"flush":   p.settings.Flush,
+			"rebuild": p.Settings.Rebuild,
+			"restore": p.Settings.Restore,
+			"flush":   p.Settings.Flush,
 		}).Info("mode specified using boolean config")
 
 		if !hasMode {
 			return fmt.Errorf("no mode specified")
 		}
-		if multipleModesSpecified(p.settings.Rebuild, p.settings.Restore, p.settings.Flush) {
+		if multipleModesSpecified(p.Settings.Rebuild, p.Settings.Restore, p.Settings.Flush) {
 			return fmt.Errorf("multiple modes specified")
 		}
 
-		if p.settings.Rebuild {
+		if p.Settings.Rebuild {
 			mode = rebuildMode
-		} else if p.settings.Restore {
+		} else if p.Settings.Restore {
 			mode = restoreMode
 		} else {
 			mode = flushMode
@@ -92,66 +65,66 @@ func (p *Plugin) validateMode() error {
 	}
 
 	logrus.WithField("mode", mode).Info("using mode")
-	p.settings.Mode = mode
+	p.Settings.Mode = mode
 
-	if p.settings.Filename == "" {
+	if p.Settings.Filename == "" {
 		logrus.Debug("using default filename")
-		p.settings.Filename = "archive.tar"
+		p.Settings.Filename = "archive.tar"
 	}
-	logrus.WithField("filename", p.settings.Filename).Debug("using filename")
+	logrus.WithField("filename", p.Settings.Filename).Debug("using filename")
 
 	// Validate mode settings
 	if mode != flushMode {
-		if p.settings.Path == "" {
+		if p.Settings.Path == "" {
 			logrus.WithFields(logrus.Fields{
-				"repo.owner":    p.pipeline.Repo.Owner,
-				"repo.name":     p.pipeline.Repo.Name,
-				"commit.branch": p.pipeline.Commit.Branch,
+				"repo.owner":  p.Metadata.Repository.Owner,
+				"repo.name":   p.Metadata.Repository.Name,
+				"repo.branch": p.Metadata.Repository.DefaultBranch,
 			}).Debug("creating default path")
-			p.settings.Path = fmt.Sprintf(
+			p.Settings.Path = fmt.Sprintf(
 				"%s/%s/%s",
-				p.pipeline.Repo.Owner,
-				p.pipeline.Repo.Name,
-				p.pipeline.Commit.Branch,
+				p.Metadata.Repository.Owner,
+				p.Metadata.Repository.Name,
+				p.Metadata.Repository.DefaultBranch,
 			)
 		}
-		logrus.WithField("path", p.settings.Path).Debug("using path")
+		logrus.WithField("path", p.Settings.Path).Debug("using path")
 
 		if mode == rebuildMode {
-			mount := p.settings.Mount.Value()
+			mount := p.Settings.Mount
 			if len(mount) == 0 {
 				return fmt.Errorf("cache not specified")
 			}
-			p.settings.mount = mount
+			p.Settings.mount = mount
 		} else {
-			if p.settings.FallbackPath == "" {
+			if p.Settings.FallbackPath == "" {
 				logrus.WithFields(logrus.Fields{
-					"repo.owner":  p.pipeline.Repo.Owner,
-					"repo.name":   p.pipeline.Repo.Name,
-					"repo.branch": p.pipeline.Repo.Branch,
+					"repo.owner":  p.Metadata.Repository.Owner,
+					"repo.name":   p.Metadata.Repository.Name,
+					"repo.branch": p.Metadata.Repository.DefaultBranch,
 				}).Debug("creating default fallback path")
-				p.settings.FallbackPath = fmt.Sprintf(
+				p.Settings.FallbackPath = fmt.Sprintf(
 					"%s/%s/%s",
-					p.pipeline.Repo.Owner,
-					p.pipeline.Repo.Name,
-					p.pipeline.Repo.Branch,
+					p.Metadata.Repository.Owner,
+					p.Metadata.Repository.Name,
+					p.Metadata.Repository.DefaultBranch,
 				)
 			}
-			logrus.WithField("path", p.settings.FallbackPath).Debug("using path as fallback")
+			logrus.WithField("path", p.Settings.FallbackPath).Debug("using path as fallback")
 		}
 	} else {
-		if p.settings.FlushPath == "" {
+		if p.Settings.FlushPath == "" {
 			logrus.WithFields(logrus.Fields{
-				"repo.owner": p.pipeline.Repo.Owner,
-				"repo.name":  p.pipeline.Repo.Name,
+				"repo.owner": p.Metadata.Repository.Owner,
+				"repo.name":  p.Metadata.Repository.Name,
 			}).Debug("creating default flush path")
-			p.settings.FlushPath = fmt.Sprintf(
+			p.Settings.FlushPath = fmt.Sprintf(
 				"%s/%s",
-				p.pipeline.Repo.Owner,
-				p.pipeline.Repo.Name,
+				p.Metadata.Repository.Owner,
+				p.Metadata.Repository.Name,
 			)
 		}
-		logrus.WithField("path", p.settings.FlushPath).Debug("using path when flushing")
+		logrus.WithField("path", p.Settings.FlushPath).Debug("using path when flushing")
 	}
 
 	return nil
@@ -159,7 +132,7 @@ func (p *Plugin) validateMode() error {
 
 func (p *Plugin) validateS3() error {
 	// Validate the endpoint
-	endpoint := p.settings.S3Options.Endpoint
+	endpoint := p.Settings.S3Options.Endpoint
 	isAWS := false
 	bucket := ""
 	region := ""
@@ -235,20 +208,20 @@ func (p *Plugin) validateS3() error {
 
 	if bucket != "" {
 		logrus.WithField("bucket", bucket).Info("bucket found in S3 endpoint")
-		if p.settings.Root != "" {
+		if p.Settings.Root != "" {
 			return fmt.Errorf("bucket %s already specified in endpoint remove from root", bucket)
 		}
-		p.settings.Root = bucket
+		p.Settings.Root = bucket
 	}
 
 	if region != "" {
 		logrus.WithField("region", region).Info("region found in S3 endpoint")
-		if p.settings.S3Options.Region != "" {
+		if p.Settings.S3Options.Region != "" {
 			return fmt.Errorf("region %s already specified in endpoint remove from config", region)
 		}
-		p.settings.S3Options.Region = region
+		p.Settings.S3Options.Region = region
 	}
-	s3Opts := p.settings.S3Options
+	s3Opts := p.Settings.S3Options
 
 	if (s3Opts.Access != "" || s3Opts.Secret != "") && s3Opts.FileCredentials != "" {
 		return fmt.Errorf("only one credentials method should be used. Use either access-key and secret-key OR the credentials file")
@@ -264,10 +237,10 @@ func (p *Plugin) validateS3() error {
 		"endpoint": endpoint,
 		"use-ssl":  useSSL,
 	}).Info("using S3 endpoint")
-	p.settings.S3Options.Endpoint = endpoint
-	p.settings.S3Options.UseSSL = useSSL
+	p.Settings.S3Options.Endpoint = endpoint
+	p.Settings.S3Options.UseSSL = useSSL
 
-	if isAWS && p.settings.Root == "" {
+	if isAWS && p.Settings.Root == "" {
 		return fmt.Errorf("no aws bucket specified in root or endpoint")
 	}
 
@@ -275,32 +248,36 @@ func (p *Plugin) validateS3() error {
 }
 
 // Execute provides the implementation of the plugin.
-func (p *Plugin) Execute() error {
-	at, err := util.FromFilename(p.settings.Filename)
+func (p *Plugin) Execute(ctx context.Context) error {
+	err := p.Validate()
+	if err != nil {
+		return err
+	}
+	at, err := util.FromFilename(p.Settings.Filename)
 	if err != nil {
 		return err
 	}
 
-	st, err := s3.New(&p.settings.S3Options)
+	st, err := s3.New(&p.Settings.S3Options)
 	if err != nil {
 		return err
 	}
 
 	c := cache.New(st, at)
 
-	if p.settings.Mode == rebuildMode {
-		path := cleanPath(p.settings.Root, p.settings.Path, p.settings.Filename)
+	if p.Settings.Mode == rebuildMode {
+		path := cleanPath(p.Settings.Root, p.Settings.Path, p.Settings.Filename)
 		logrus.WithFields(logrus.Fields{
 			"path": path,
 		}).Info("rebuilding cache")
-		err = c.Rebuild(p.settings.mount, path)
+		err = c.Rebuild(p.Settings.mount, path)
 
 		if err == nil {
 			logrus.Infof("cache rebuilt")
 		}
-	} else if p.settings.Mode == restoreMode {
-		path := cleanPath(p.settings.Root, p.settings.Path, p.settings.Filename)
-		fallbackPath := cleanPath(p.settings.Root, p.settings.FallbackPath, p.settings.Filename)
+	} else if p.Settings.Mode == restoreMode {
+		path := cleanPath(p.Settings.Root, p.Settings.Path, p.Settings.Filename)
+		fallbackPath := cleanPath(p.Settings.Root, p.Settings.FallbackPath, p.Settings.Filename)
 
 		logrus.WithFields(logrus.Fields{
 			"path":     path,
@@ -311,14 +288,14 @@ func (p *Plugin) Execute() error {
 		if err == nil {
 			logrus.Info("cache restored")
 		}
-	} else /* p.settings.Mode == flushMode */ {
-		flushPath := cleanPath(p.settings.Root, p.settings.FlushPath)
+	} else /* p.Settings.Mode == flushMode */ {
+		flushPath := cleanPath(p.Settings.Root, p.Settings.FlushPath)
 
 		logrus.WithFields(logrus.Fields{
 			"path":    flushPath,
-			"max-age": p.settings.FlushAge,
+			"max-age": p.Settings.FlushAge,
 		}).Info("flushing cache")
-		f := cache.NewFlusher(st, genIsExpired(p.settings.FlushAge))
+		f := cache.NewFlusher(st, genIsExpired(int(p.Settings.FlushAge)))
 		err = f.Flush(flushPath)
 
 		if err == nil {

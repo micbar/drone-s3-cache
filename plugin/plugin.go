@@ -6,21 +6,39 @@
 package plugin
 
 import (
-	"github.com/drone-plugins/drone-plugin-lib/drone"
+	"codeberg.org/woodpecker-plugins/go-plugin"
+	"github.com/micbar/drone-s3-cache/storage/s3"
 )
 
 // Plugin implements drone.Plugin to provide the plugin implementation.
 type Plugin struct {
-	settings Settings
-	pipeline drone.Pipeline
-	network  drone.Network
+	*plugin.Plugin
+	Settings Settings
 }
 
-// New initializes a plugin from the given Settings, Pipeline, and Network.
-func New(settings Settings, pipeline drone.Pipeline, network drone.Network) drone.Plugin {
-	return &Plugin{
-		settings: settings,
-		pipeline: pipeline,
-		network:  network,
-	}
+// Settings for the plugin.
+type Settings struct {
+	Mode         string
+	Root         string
+	Filename     string
+	Path         string
+	FallbackPath string
+	FlushPath    string
+	FlushAge     int64
+	Mount        []string
+	Restore      bool // DEPRECATED
+	Rebuild      bool // DEPRECATED
+	Flush        bool // DEPRECATED
+
+	S3Options s3.Options
+	mount     []string
 }
+
+const (
+	restoreMode = "restore"
+	rebuildMode = "rebuild"
+	flushMode   = "flush"
+
+	awsDomain   = "amazonaws.com"
+	awsEndpoint = "https://s3." + awsDomain
+)
